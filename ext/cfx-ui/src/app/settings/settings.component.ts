@@ -2,7 +2,6 @@ import { Component, OnInit, OnDestroy } from '@angular/core';
 import { GameService } from '../game.service';
 import { DiscourseService } from '../discourse.service';
 import { ServersService } from '../servers/servers.service';
-import { Http } from '@angular/http';
 import { Language, TranslationService, Translation } from 'angular-l10n';
 import { SettingsService, Setting } from '../settings.service';
 import { Subscription } from 'rxjs';
@@ -83,15 +82,13 @@ export class SettingsComponent extends Translation implements OnInit, OnDestroy 
     currentAccount: any = null;
     darkTheme = false;
     language = 'en';
-    ui_disableMusicTheme = false;
-    game_showStreamingProgress = false;
 
     public settings: DisplaySetting[] = [];
 
     @Language() lang: string;
 
     constructor(private gameService: GameService, private discourseService: DiscourseService,
-        private serversService: ServersService, private http: Http,
+        private serversService: ServersService,
         public translation: TranslationService, private settingsService: SettingsService) {
         super();
 
@@ -102,9 +99,6 @@ export class SettingsComponent extends Translation implements OnInit, OnDestroy 
         gameService.languageChange.subscribe(value => this.language = value);
 
         discourseService.signinChange.subscribe(user => this.currentAccount = user);
-
-        this.registerConvar('ui_disableMusicTheme', (value) => this.ui_disableMusicTheme = (value === 'true'));
-        this.registerConvar('game_showStreamingProgress', (value) => this.game_showStreamingProgress = (value === 'true'));
     }
 
     registerConvar(name: string, valueCallback: (value: string) => void) {

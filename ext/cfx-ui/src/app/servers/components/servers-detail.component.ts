@@ -57,6 +57,30 @@ export class ServersDetailComponent extends Translation implements OnInit, OnDes
     @ViewChildren('input')
     private inputBox;
 
+    get serverAddress() {
+        if (this.server) {
+            if (this.server.address) {
+                const address = this.server.address;
+
+                const m = address.match(/(.*)-(.*?)\.cfx\.re/i);
+
+                if (m) {
+                    return `cfx.re/join/${m[2]}`;
+                }
+
+                const m2 = address.match(/^[a-z0-9]{6,}$/i);
+
+                if (m2) {
+                    return `cfx.re/join/${m2[0]}`;
+                }
+
+                return address;
+            }
+        }
+
+        return null;
+    }
+
     constructor(private gameService: GameService, private serversService: ServersService,
         private route: ActivatedRoute, private cdRef: ChangeDetectorRef, private sanitizer: DomSanitizer,
         private router: Router, @Inject(PLATFORM_ID) private platformId: any, private meta: MetaService) {

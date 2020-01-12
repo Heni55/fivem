@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -16,13 +17,17 @@ namespace CitizenFX.Core
 	class InternalManager : MarshalByRefObject, InternalManagerInterface
 	{
 		private static readonly List<BaseScript> ms_definedScripts = new List<BaseScript>();
-		private static readonly List<Tuple<DateTime, AsyncCallback>> ms_delays = new List<Tuple<DateTime, AsyncCallback>>();
+		private static readonly List<Tuple<DateTime, AsyncCallback, string>> ms_delays = new List<Tuple<DateTime, AsyncCallback, string>>();
 		private static int ms_instanceId;
+
+		private string m_resourceName;
 
 		public static IScriptHost ScriptHost { get; internal set; }
 
 		// actually, domain-global
-		private static InternalManager GlobalManager { get; set; }
+		internal static InternalManager GlobalManager { get; set; }
+
+		internal string ResourceName => m_resourceName;
 
 		[SecuritySafeCritical]
 		public InternalManager()
@@ -36,11 +41,33 @@ namespace CitizenFX.Core
 			Thread.CurrentThread.CurrentUICulture = CultureInfo.InvariantCulture;
 
 			InitializeAssemblyResolver();
+
 			CitizenTaskScheduler.Create();
+		}
+
+		[SecuritySafeCritical]
+		public void CreateTaskScheduler()
+		{
+			CitizenTaskScheduler.MakeDefault();
 
 #if !IS_FXSERVER
 			SynchronizationContext.SetSynchronizationContext(new CitizenSynchronizationContext());
 #endif
+		}
+
+		[SecuritySafeCritical]
+		public void Destroy()
+		{
+			if (m_retvalBuffer != IntPtr.Zero)
+			{
+				Marshal.FreeHGlobal(m_retvalBuffer);
+				m_retvalBuffer = IntPtr.Zero;
+			}
+		}
+
+		public void SetResourceName(string resourceName)
+		{
+			m_resourceName = resourceName;
 		}
 
 		[SecuritySafeCritical]
@@ -87,12 +114,16 @@ namespace CitizenFX.Core
 		{
 			if (ms_loadedAssemblies.ContainsKey(assemblyFile))
 			{
+#if !IS_FXSERVER
 				Debug.WriteLine("Returning previously loaded assembly {0}", ms_loadedAssemblies[assemblyFile].FullName);
+#endif
 				return ms_loadedAssemblies[assemblyFile];
 			}
 
 			var assembly = Assembly.Load(assemblyData, symbolData);
+#if !IS_FXSERVER
 			Debug.WriteLine("Loaded {1} into {0}", AppDomain.CurrentDomain.FriendlyName, assembly.FullName);
+#endif
 
 			ms_loadedAssemblies[assemblyFile] = assembly;
 
@@ -156,22 +187,30 @@ namespace CitizenFX.Core
 			{
 				try
 				{
-					var assemblyStream = new BinaryReader(new FxStreamWrapper(ScriptHost.OpenHostFile(name + ".dll")));
-					var assemblyBytes = assemblyStream.ReadBytes((int)assemblyStream.BaseStream.Length);
+					byte[] assemblyBytes;
+
+					using (var assemblyStream = new BinaryReader(new FxStreamWrapper(ScriptHost.OpenHostFile(name + ".dll"))))
+					{
+						assemblyBytes = assemblyStream.ReadBytes((int)assemblyStream.BaseStream.Length);
+					}
 
 					byte[] symbolBytes = null;
 
 					try
 					{
-						var symbolStream = new BinaryReader(new FxStreamWrapper(ScriptHost.OpenHostFile(name + ".dll.mdb")));
-						symbolBytes = symbolStream.ReadBytes((int)symbolStream.BaseStream.Length);
+						using (var symbolStream = new BinaryReader(new FxStreamWrapper(ScriptHost.OpenHostFile(name + ".dll.mdb"))))
+						{
+							symbolBytes = symbolStream.ReadBytes((int)symbolStream.BaseStream.Length);
+						}
 					}
 					catch
 					{
 						try
 						{
-							var symbolStream = new BinaryReader(new FxStreamWrapper(ScriptHost.OpenHostFile(name + ".pdb")));
-							symbolBytes = symbolStream.ReadBytes((int)symbolStream.BaseStream.Length);
+							using (var symbolStream = new BinaryReader(new FxStreamWrapper(ScriptHost.OpenHostFile(name + ".pdb"))))
+							{
+								symbolBytes = symbolStream.ReadBytes((int)symbolStream.BaseStream.Length);
+							}
 						}
 						catch
 						{
@@ -202,9 +241,20 @@ namespace CitizenFX.Core
 				}
 			}
 
-			Debug.WriteLine($"Could not load assembly {baseName} - loading exceptions: {exceptions}");
+			if (!baseName.Contains(".resources"))
+			{
+				Debug.WriteLine($"Could not load assembly {baseName} - loading exceptions: {exceptions}");
+			}
 
 			return null;
+		}
+
+		[SecuritySafeCritical]
+		public byte[] WalkStack(byte[] boundaryStart, byte[] boundaryEnd)
+		{
+			var success = GameInterface.WalkStackBoundary(m_resourceName, boundaryStart, boundaryEnd, out var blob);
+
+			return (success) ? blob : null;
 		}
 
 		static Assembly CurrentDomain_AssemblyResolve(object sender, ResolveEventArgs args)
@@ -212,9 +262,9 @@ namespace CitizenFX.Core
 			return LoadAssemblyInternal(args.Name.Split(',')[0], useSearchPaths: true);
 		}
 
-		public static void AddDelay(int delay, AsyncCallback callback)
+		public static void AddDelay(int delay, AsyncCallback callback, string name = null)
 		{
-			ms_delays.Add(Tuple.Create(DateTime.UtcNow.AddMilliseconds(delay), callback));
+			ms_delays.Add(Tuple.Create(DateTime.UtcNow.AddMilliseconds(delay), callback, name));
 		}
 
 		public static void TickGlobal()
@@ -222,41 +272,86 @@ namespace CitizenFX.Core
 			GlobalManager.Tick();
 		}
 
+		[SecuritySafeCritical]
 		public void Tick()
 		{
+			IsProfiling = ProfilerIsRecording();
+
+			if (GameInterface.SnapshotStackBoundary(out var b))
+			{
+				ScriptHost.SubmitBoundaryStart(b, b.Length);
+			}
+
 			try
 			{
-				ScriptContext.GlobalCleanUp();
-
-				var delays = ms_delays.ToArray();
-				var now = DateTime.UtcNow;
-
-				foreach (var delay in delays)
+				using (var scope = new ProfilerScope(() => "c# cleanup"))
 				{
-					if (now >= delay.Item1)
-					{
-						delay.Item2(new DummyAsyncResult());
+					ScriptContext.GlobalCleanUp();
+				}
 
-						ms_delays.Remove(delay);
+				using (var scope = new ProfilerScope(() => "c# deferredDelay"))
+				{
+					var delays = ms_delays.ToArray();
+					var now = DateTime.UtcNow;
+
+					foreach (var delay in delays)
+					{
+						if (now >= delay.Item1)
+						{
+							using (var inScope = new ProfilerScope(() => delay.Item3))
+							{
+								try
+								{
+									BaseScript.CurrentName = delay.Item3;
+									delay.Item2(new DummyAsyncResult());
+								}
+								finally
+								{
+									BaseScript.CurrentName = null;
+								}
+							}
+
+							ms_delays.Remove(delay);
+						}
 					}
 				}
 
-				foreach (var script in ms_definedScripts.ToArray())
+				using (var scope = new ProfilerScope(() => "c# schedule"))
 				{
-					script.ScheduleRun();
+					foreach (var script in ms_definedScripts.ToArray())
+					{
+						script.ScheduleRun();
+					}
 				}
 
-				CitizenTaskScheduler.Instance.Tick();
-				CitizenSynchronizationContext.Tick();
+				using (var scope = new ProfilerScope(() => "c# tasks"))
+				{
+					CitizenTaskScheduler.Instance.Tick();
+				}
+
+				using (var scope = new ProfilerScope(() => "c# syncCtx"))
+				{
+					CitizenSynchronizationContext.Tick();
+				}
 			}
 			catch (Exception e)
 			{
-				Debug.WriteLine("Error during Tick: {0}", e.ToString());
+				PrintError("tick", e);
+			}
+			finally
+			{
+				ScriptHost.SubmitBoundaryStart(null, 0);
 			}
 		}
 
+		[SecuritySafeCritical]
 		public void TriggerEvent(string eventName, byte[] argsSerialized, string sourceString)
 		{
+			if (GameInterface.SnapshotStackBoundary(out var bo))
+			{
+				ScriptHost.SubmitBoundaryStart(bo, bo.Length);
+			}
+
 			try
 			{
 				var obj = MsgPackDeserializer.Deserialize(argsSerialized, netSource: (sourceString.StartsWith("net") ? sourceString : null)) as List<object> ?? (IEnumerable<object>)new object[0];
@@ -269,7 +364,14 @@ namespace CitizenFX.Core
 
 				foreach (var script in scripts)
 				{
-					Task.Factory.StartNew(() => script.EventHandlers.Invoke(eventName, sourceString, objArray)).Unwrap().ContinueWith(a =>
+					Task.Factory.StartNew(() =>
+					{
+						BaseScript.CurrentName = $"eventHandler {script.GetType().Name} -> {eventName}";
+						var t = script.EventHandlers.Invoke(eventName, sourceString, objArray);
+						BaseScript.CurrentName = null;
+
+						return t;
+					}, CancellationToken.None, TaskCreationOptions.None, CitizenTaskScheduler.Instance).Unwrap().ContinueWith(a =>
 					{
 						if (a.IsFaulted)
 						{
@@ -285,7 +387,11 @@ namespace CitizenFX.Core
 			}
 			catch (Exception e)
 			{
-				Debug.WriteLine(e.ToString());
+				PrintError($"event ({eventName})", e);
+			}
+			finally
+			{
+				ScriptHost.SubmitBoundaryStart(null, 0);
 			}
 		}
 
@@ -306,30 +412,46 @@ namespace CitizenFX.Core
 		[SecuritySafeCritical]
 		public void CallRef(int refIndex, byte[] argsSerialized, out IntPtr retvalSerialized, out int retvalSize)
 		{
-			var retvalData = FunctionReference.Invoke(refIndex, argsSerialized);
-
-			if (retvalData != null)
+			if (GameInterface.SnapshotStackBoundary(out var b))
 			{
-				if (m_retvalBuffer == IntPtr.Zero)
-				{
-					m_retvalBuffer = Marshal.AllocHGlobal(32768);
-					m_retvalBufferSize = 32768;
-				}
-
-				if (m_retvalBufferSize < retvalData.Length)
-				{
-					m_retvalBuffer = Marshal.ReAllocHGlobal(m_retvalBuffer, new IntPtr(retvalData.Length));
-				}
-
-				Marshal.Copy(retvalData, 0, m_retvalBuffer, retvalData.Length);
-
-				retvalSerialized = m_retvalBuffer;
-				retvalSize = retvalData.Length;
+				ScriptHost.SubmitBoundaryStart(b, b.Length);
 			}
-			else
+
+			try
+			{
+				var retvalData = FunctionReference.Invoke(refIndex, argsSerialized);
+
+				if (retvalData != null)
+				{
+					if (m_retvalBuffer == IntPtr.Zero)
+					{
+						m_retvalBuffer = Marshal.AllocHGlobal(32768);
+						m_retvalBufferSize = 32768;
+					}
+
+					if (m_retvalBufferSize < retvalData.Length)
+					{
+						m_retvalBuffer = Marshal.ReAllocHGlobal(m_retvalBuffer, new IntPtr(retvalData.Length));
+						m_retvalBufferSize = retvalData.Length;
+					}
+
+					Marshal.Copy(retvalData, 0, m_retvalBuffer, retvalData.Length);
+
+					retvalSerialized = m_retvalBuffer;
+					retvalSize = retvalData.Length;
+				}
+				else
+				{
+					retvalSerialized = IntPtr.Zero;
+					retvalSize = 0;
+				}
+			}
+			catch (Exception e)
 			{
 				retvalSerialized = IntPtr.Zero;
 				retvalSize = 0;
+
+				PrintError($"reference call", e.InnerException ?? e);
 			}
 		}
 
@@ -371,6 +493,47 @@ namespace CitizenFX.Core
 			return null;
 		}
 
+		[SecuritySafeCritical]
+		private void PrintError(string where, Exception what)
+		{
+			ScriptHost.SubmitBoundaryEnd(null, 0);
+
+			var stackTrace = new StackTrace(what, true);
+			var frames = stackTrace.GetFrames()
+				.Select(a => new
+				{
+					Frame = a,
+					Method = a.GetMethod(),
+					Type = a.GetMethod()?.DeclaringType
+				})
+				.Where(a => a.Method != null && (!a.Type.Assembly.GetName().Name.Contains("mscorlib") && !a.Type.Assembly.GetName().Name.Contains("CitizenFX.Core") && !a.Type.Assembly.GetName().Name.StartsWith("System")))
+				.Select(a => new
+				{
+					name = EnhancedStackTrace.GetMethodDisplayString(a.Method).ToString(),
+					sourcefile = a.Frame.GetFileName() ?? "",
+					line = a.Frame.GetFileLineNumber(),
+					file = $"@{m_resourceName}/{a.Type?.Assembly.GetName().Name ?? "UNK"}.dll"
+				});
+
+			var serializedFrames = MsgPackSerializer.Serialize(frames);
+			var formattedStackTrace = FormatStackTrace(serializedFrames);
+
+			if (formattedStackTrace != null)
+			{
+				Debug.WriteLine($"^1SCRIPT ERROR in {where}: {what.GetType().FullName}: {what.Message}^7");
+				Debug.WriteLine("{0}", formattedStackTrace);
+			}
+		}
+
+		[SecurityCritical]
+		private unsafe string FormatStackTrace(byte[] serializedFrames)
+		{
+			fixed (byte* ptr = serializedFrames)
+			{
+				return Native.Function.Call<string>((Native.Hash)0xd70c3bca, ptr, serializedFrames.Length);
+			}
+		}
+
 		private class DirectScriptHost : IScriptHost
 		{
 			private IntPtr hostPtr;
@@ -380,6 +543,8 @@ namespace CitizenFX.Core
 			private FastMethod<Func<IntPtr, IntPtr, IntPtr, int>> openHostFileMethod;
 			private FastMethod<Func<IntPtr, int, int, IntPtr, int>> canonicalizeRefMethod;
 			private FastMethod<Action<IntPtr, IntPtr>> scriptTraceMethod;
+			private FastMethod<Action<IntPtr, IntPtr, int>> submitBoundaryStartMethod;
+			private FastMethod<Action<IntPtr, IntPtr, int>> submitBoundaryEndMethod;
 
 			[SecuritySafeCritical]
 			public DirectScriptHost(IntPtr hostPtr)
@@ -391,6 +556,8 @@ namespace CitizenFX.Core
 				openHostFileMethod = new FastMethod<Func<IntPtr, IntPtr, IntPtr, int>>(nameof(openHostFileMethod), hostPtr, 2);
 				canonicalizeRefMethod = new FastMethod<Func<IntPtr, int, int, IntPtr, int>>(nameof(canonicalizeRefMethod), hostPtr, 3);
 				scriptTraceMethod = new FastMethod<Action<IntPtr, IntPtr>>(nameof(scriptTraceMethod), hostPtr, 4);
+				submitBoundaryStartMethod = new FastMethod<Action<IntPtr, IntPtr, int>>(nameof(submitBoundaryStartMethod), hostPtr, 5);
+				submitBoundaryEndMethod = new FastMethod<Action<IntPtr, IntPtr, int>>(nameof(submitBoundaryEndMethod), hostPtr, 6);
 			}
 
 			[SecuritySafeCritical]
@@ -424,7 +591,10 @@ namespace CitizenFX.Core
 					Marshal.FreeHGlobal(stringRef);
 				}
 
-				return (fxIStream)Marshal.GetObjectForIUnknown(retVal);
+				var s = (fxIStream)Marshal.GetObjectForIUnknown(retVal);
+				Marshal.Release(retVal);
+
+				return s;
 			}
 
 			[SecuritySafeCritical]
@@ -451,7 +621,10 @@ namespace CitizenFX.Core
 					Marshal.FreeHGlobal(stringRef);
 				}
 
-				return (fxIStream)Marshal.GetObjectForIUnknown(retVal);
+				var s = (fxIStream)Marshal.GetObjectForIUnknown(retVal);
+				Marshal.Release(retVal);
+
+				return s;
 			}
 
 			[SecuritySafeCritical]
@@ -495,6 +668,68 @@ namespace CitizenFX.Core
 					scriptTraceMethod.method(hostPtr, new IntPtr(p));
 				}
 			}
+
+			[SecuritySafeCritical]
+			public void SubmitBoundaryStart(byte[] boundaryData, int boundarySize)
+			{
+				SubmitBoundaryInternal(submitBoundaryStartMethod, boundaryData, boundarySize);
+			}
+
+			[SecuritySafeCritical]
+			public void SubmitBoundaryEnd(byte[] boundaryData, int boundarySize)
+			{
+				SubmitBoundaryInternal(submitBoundaryEndMethod, boundaryData, boundarySize);
+			}
+
+			[SecurityCritical]
+			private unsafe void SubmitBoundaryInternal(FastMethod<Action<IntPtr, IntPtr, int>> method, byte[] boundaryData, int boundarySize)
+			{
+				fixed (byte* p = boundaryData)
+				{
+					method.method(hostPtr, new IntPtr(p), boundarySize);
+				}
+			}
+		}
+
+		internal static bool ProfilerIsRecording()
+		{
+			return Native.API.ProfilerIsRecording();
+		}
+
+		internal static void ProfilerEnterScope(string scopeName)
+		{
+			Native.API.ProfilerEnterScope(scopeName);
+		}
+
+		internal static void ProfilerExitScope()
+		{
+			Native.API.ProfilerExitScope();
+		}
+
+		internal static bool IsProfiling { get; private set; }
+	}
+
+
+	internal class ProfilerScope : IDisposable
+	{
+		public ProfilerScope(Func<string> name)
+		{
+			if (!InternalManager.IsProfiling)
+			{
+				return;
+			}
+
+			InternalManager.ProfilerEnterScope(name() ?? "c# scope");
+		}
+
+		public void Dispose()
+		{
+			if (!InternalManager.IsProfiling)
+			{
+				return;
+			}
+
+			InternalManager.ProfilerExitScope();
 		}
 	}
 }

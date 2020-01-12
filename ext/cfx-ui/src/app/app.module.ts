@@ -22,6 +22,7 @@ import {ConnectingPopupComponent} from './servers/connecting-popup.component';
 import {HomeComponent} from './home/home.component';
 import {HomeTweetComponent} from './home/home-tweet.component';
 import {SettingsComponent} from './settings/settings.component';
+import {MinModeComponent} from './minmode/minmode.component';
 
 import {ServersComponent} from './servers/components/servers.component';
 import {ServersContainerComponent} from './servers/components/servers-container.component';
@@ -47,6 +48,9 @@ import {EscapePipe} from './escape.pipe';
 import { LocalStorage } from './local-storage';
 
 import { Languages } from './languages';
+import { ServerTagsService } from './servers/server-tags.service';
+
+const localePrefix = (environment.web) ? 'https://servers.fivem.net/' : './';
 
 const l10nConfig: L10nConfig = {
 	locale: {
@@ -54,7 +58,12 @@ const l10nConfig: L10nConfig = {
 		language: 'en'
 	},
 	translation: {
-		providers: [] // see AppModule constructor
+		//providers: [] // see AppModule constructor
+					  // broke on Angular 8, here again
+		providers: [
+			{ type: ProviderType.Fallback, prefix: localePrefix + 'assets/languages/locale-en', fallbackLanguage: [] },
+			{ type: ProviderType.Static, prefix: localePrefix + 'assets/languages/locale-' }
+		]
 	}
 };
 
@@ -88,6 +97,7 @@ export function metaFactory(): MetaLoader {
 		ServersDetailComponent,
 		DirectConnectComponent,
 		PlayerAvatarComponent,
+		MinModeComponent,
 		ColorizePipe,
 		EscapePipe
 	],
@@ -109,6 +119,7 @@ export function metaFactory(): MetaLoader {
 	],
 	providers:    [
 		ServersService,
+		ServerTagsService,
 		TweetService,
 		{
 			provide:  GameService,
@@ -129,13 +140,13 @@ export function metaFactory(): MetaLoader {
 	]
 })
 export class AppModule {
-	constructor(public l10nLoader: L10nLoader, @Inject(L10N_CONFIG) private configuration: L10nConfigRef) {
-		const localePrefix = (environment.web) ? 'https://servers.fivem.net/' : './';
+	constructor(public l10nLoader: L10nLoader/*, @Inject(L10N_CONFIG) private configuration: L10nConfigRef*/) {
+		/*const localePrefix = (environment.web) ? 'https://servers.fivem.net/' : './';
 
 		this.configuration.translation.providers = [
 			{ type: ProviderType.Fallback, prefix: localePrefix + 'assets/languages/locale-en', fallbackLanguage: [] },
 			{ type: ProviderType.Static, prefix: localePrefix + 'assets/languages/locale-' }
-		];
+		];*/
 
 		this.l10nLoader.load();
 	}

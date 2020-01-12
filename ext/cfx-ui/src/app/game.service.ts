@@ -2,11 +2,8 @@ import {Injectable, EventEmitter, NgZone, Inject} from '@angular/core';
 import {DomSanitizer} from '@angular/platform-browser';
 
 import {Server} from './servers/server';
-import {ServersService} from './servers/servers.service';
 
 import { environment } from '../environments/environment';
-import { DiscourseService } from './discourse.service';
-import { LocaleStorage } from 'angular-l10n';
 import { LocalStorage } from './local-storage';
 import { Observable, BehaviorSubject } from 'rxjs';
 
@@ -15,6 +12,11 @@ export class ConnectStatus {
 	public message: string;
 	public count: number;
 	public total: number;
+}
+
+export class ConnectCard {
+	public server: Server;
+	public card: string;
 }
 
 export class Profile {
@@ -44,6 +46,7 @@ class ConvarWrapper {
 export abstract class GameService {
 	connectFailed = new EventEmitter<[Server, string]>();
 	connectStatus = new EventEmitter<ConnectStatus>();
+	connectCard = new EventEmitter<ConnectCard>();
 	connecting = new EventEmitter<Server>();
 
 	errorMessage = new EventEmitter<string>();
@@ -56,10 +59,41 @@ export abstract class GameService {
 	languageChange = new BehaviorSubject<string>('en');
 
 	signinChange = new EventEmitter<Profile>();
+	ownershipTicketChange = new EventEmitter<string>();
+	computerNameChange = new EventEmitter<string>();
+	authPayloadSet = new EventEmitter<string>();
+
+	inMinMode = false;
+	minmodeBlob: any = {};
+
+	minModeChanged = new EventEmitter<boolean>();
 
 	profile: Profile = null;
 
 	convars: { [name: string]: ConvarWrapper } = {};
+
+	get gameName(): string {
+		const targetGame = (window as any).nuiTargetGame;
+
+		if (!targetGame) {
+			return 'rdr3';
+		}
+
+		return targetGame;
+	}
+
+	get brandingName(): string {
+		switch (this.gameName) {
+			case 'rdr3':
+				return 'RedM';
+			case 'launcher':
+				return 'Cfx.re';
+			case 'gta5':
+				return 'FiveM';
+			default:
+				return 'CitizenFX';
+		}
+	}
 
 	get nickname(): string {
 		return 'UnknownPlayer';
@@ -165,6 +199,13 @@ export abstract class GameService {
 		});
 	}
 
+	protected invokeConnectCard(server: Server, cardBlob: string) {
+		this.connectCard.emit({
+			server:  server,
+			card:    cardBlob
+		});
+	}
+
 	protected invokeNicknameChanged(name: string) {
 		this.nicknameChange.next(name);
 	}
@@ -212,6 +253,10 @@ export abstract class GameService {
 	public setDiscourseIdentity(token: string, clientId: string) {
 
 	}
+
+	public submitCardResponse(data: any) {
+
+	}
 }
 
 export class ServerHistoryEntry {
@@ -246,28 +291,23 @@ export class CfxGameService extends GameService {
 	
 	private inConnecting = false;
 
-	constructor(private sanitizer: DomSanitizer, private zone: NgZone, private discourseService: DiscourseService) {
+	constructor(private sanitizer: DomSanitizer, private zone: NgZone) {
 		super();
 	}
 
 	init() {
 		(<any>window).invokeNative('getFavorites', '');
 		(<any>window).invokeNative('getConvars', '');
+		(<any>window).invokeNative('getMinModeInfo', '');
 
 		fetch('https://nui-internal/profiles/list').then(async response => {
-			const json = <Profiles>await response.json();
+			try {
+				const json = <Profiles>await response.json();
 
-			if (json.profiles && json.profiles.length > 0) {
-				this.handleSignin(json.profiles[0]);
-			}
-		});
-
-		this.discourseService.signinChange.subscribe(identity => {
-			this.setDiscourseIdentity(this.discourseService.getToken(), this.discourseService.getExtClientId());
-		});
-
-		this.discourseService.messageEvent.subscribe((msg) => {
-			this.invokeInformational(msg);
+				if (json.profiles && json.profiles.length > 0) {
+					this.handleSignin(json.profiles[0]);
+				}
+			} catch (e) {}
 		});
 
 		this.zone.runOutsideAngular(() => {
@@ -290,13 +330,18 @@ export class CfxGameService extends GameService {
 							this.invokeConnectStatus(
 								this.lastServer, event.data.data.message, event.data.data.count, event.data.data.total));
 						break;
+					case 'connectCard':
+						this.zone.run(() =>
+							this.invokeConnectCard(
+								this.lastServer, event.data.data.card));
+						break;
 					case 'serverAdd':
 						if (event.data.addr in this.pingList) {
 							this.pingListEvents.push([event.data.addr, event.data.ping]);
 						}
 						break;
 					case 'setComputerName':
-						this.discourseService.setComputerName(event.data.data);
+						this.computerNameChange.emit(event.data.data);
 						break;
 					case 'getFavorites':
 						this.zone.run(() => this.favorites = event.data.list);
@@ -312,6 +357,22 @@ export class CfxGameService extends GameService {
 						convarItem.value = event.data.value;
 
 						this.zone.run(() => convar.next(event.data.value));
+
+						setTimeout(() => {
+							this.ownershipTicketChange.emit(this.getConvarValue('cl_ownershipTicket'));
+						}, 500);
+						break;
+					case 'setMinModeInfo':
+						const enabled: boolean = event.data.enabled;
+						const data = event.data.data;
+
+						this.inMinMode = enabled;
+						this.minmodeBlob = data;
+
+						this.zone.run(() => {
+							this.minModeChanged.emit(enabled);
+						});
+
 						break;
 				}
 			});
@@ -388,9 +449,7 @@ export class CfxGameService extends GameService {
 	}
 
 	invokeAuthPayload(data: string) {
-		console.log(data);
-
-		this.discourseService.handleAuthPayload(data);
+		this.authPayloadSet.emit(data);
 	}
 
 	get nickname(): string {
@@ -468,11 +527,21 @@ export class CfxGameService extends GameService {
 			token: (server && server.data && server.data.vars) ? server.data.vars.sv_licenseKeyToken : ''
 		});
 
-		(<any>window).invokeNative('connectTo', server.address);
+		(<any>window).invokeNative('connectTo', this.getConnectAddress(server));
 
 		// temporary, we hope
 		this.history.push(server.address);
 		this.saveHistory();
+	}
+
+	private getConnectAddress(server: Server): string {
+		let connectAddress = server.address;
+
+		if (server.connectEndPoints && server.connectEndPoints.length > 0) {
+			connectAddress = server.connectEndPoints[Math.floor(Math.random() * server.connectEndPoints.length)];
+		}
+
+		return connectAddress;
 	}
 
 	pingServers(servers: Server[]) {
@@ -481,7 +550,10 @@ export class CfxGameService extends GameService {
 		}
 
 		(<any>window).invokeNative('pingServers', JSON.stringify(
-			servers.map(a => [a.address.split(':')[0], parseInt(a.address.split(':')[1]), a.currentPlayers])
+			servers.map(a => {
+				const address = this.getConnectAddress(a);
+				return [address.split(':')[0], parseInt(address.split(':')[1]), a.currentPlayers]
+			})
 		));
 
 		return servers;
@@ -535,7 +607,11 @@ export class CfxGameService extends GameService {
 	lastQuery: string;
 
 	queryAddress(address: [string, number]): Promise<Server> {
-		const addrString = address[0] + ':' + address[1];
+		const addrString = (address[0].match(/^[a-z0-9]{6,}$/))
+			? `cfx.re/join/${address[0]}`
+			: (address[0].indexOf('cfx.re') === -1)
+				? address[0] + ':' + address[1]
+				: address[0];
 
 		const promise = new Promise<Server>((resolve, reject) => {
 			const to = window.setTimeout(() => {
@@ -587,6 +663,10 @@ export class CfxGameService extends GameService {
 	setDiscourseIdentity(token: string, clientId: string) {
 		(<any>window).invokeNative('setDiscourseIdentity', JSON.stringify({ token, clientId }));
 	}
+
+	public submitCardResponse(data: any) {
+		(<any>window).invokeNative('submitCardResponse', JSON.stringify({ data }));
+	}
 }
 
 @Injectable()
@@ -595,16 +675,13 @@ export class DummyGameService extends GameService {
 	private _darkTheme = false;
 	private _localhostPort = '';
 	private _language = '';
-	private pinExample = '';
 
-	constructor(private serversService: ServersService, @Inject(LocalStorage) private localStorage: any) {
+	constructor(@Inject(LocalStorage) private localStorage: any) {
 		super();
 
 		if (this.localStorage.getItem('devMode')) {
 			this._devMode = localStorage.getItem('devMode') === 'yes';
 		}
-
-		this.serversService.loadPinConfig().then(config => this.pinExample = config.pinnedServers[0]);
 	}
 
 	init() {
@@ -618,6 +695,7 @@ export class DummyGameService extends GameService {
 		profile.parameters = {};
 
 		this.handleSignin(profile);
+		this.minModeChanged.emit(false);
 	}
 
 	connectTo(server: Server, enteredAddress?: string) {

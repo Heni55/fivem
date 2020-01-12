@@ -10,6 +10,10 @@
 #include <thread>
 #include <chrono>
 
+#include <json.hpp>
+
+using json = nlohmann::json;
+
 #include "PacketDataStream.h"
 
 static __declspec(thread) MumbleClient* g_currentMumbleClient;
@@ -22,6 +26,8 @@ inline std::chrono::milliseconds msec()
 void MumbleClient::Initialize()
 {
 	CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+	m_voiceTarget = 0;
 
 	m_lastUdp = {};
 
@@ -109,6 +115,49 @@ void MumbleClient::SetOutputVolume(float volume)
 	return m_audioOutput.SetVolume(volume);
 }
 
+void MumbleClient::UpdateVoiceTarget(int idx, const VoiceTargetConfig& config)
+{
+	MumbleProto::VoiceTarget target;
+	target.set_id(idx);
+
+	for (auto& t : config.targets)
+	{
+		auto vt = target.add_targets();
+		
+		for (auto& userName : t.users)
+		{
+			m_state.ForAllUsers([this, &userName, &vt](const std::shared_ptr<MumbleUser>& user)
+			{
+				if (user->GetName() == ToWide(userName))
+				{
+					vt->add_session(user->GetSessionId());
+				}
+			});
+		}
+
+		if (!t.channel.empty())
+		{
+			for (auto& channelPair : m_state.GetChannels())
+			{
+				if (channelPair.second.GetName() == ToWide(t.channel))
+				{
+					vt->set_channel_id(channelPair.first);
+				}
+			}
+		}
+
+		vt->set_links(t.links);
+		vt->set_children(t.children);
+	}
+
+	Send(MumbleMessageType::VoiceTarget, target);
+}
+
+void MumbleClient::SetVoiceTarget(int idx)
+{
+	m_voiceTarget = idx;
+}
+
 void MumbleClient::SetChannel(const std::string& channelName)
 {
 	if (!m_connectionInfo.isConnected)
@@ -153,12 +202,29 @@ void MumbleClient::SetChannel(const std::string& channelName)
 
 void MumbleClient::SetAudioDistance(float distance)
 {
+	m_audioInput.SetDistance(distance);
 	m_audioOutput.SetDistance(distance);
+}
+
+void MumbleClient::SetPositionHook(const TPositionHook& hook)
+{
+	m_positionHook = hook;
 }
 
 float MumbleClient::GetInputAudioLevel()
 {
 	return m_audioInput.GetAudioLevel();
+}
+
+void MumbleClient::SetClientVolumeOverride(const std::string& clientName, float volume)
+{
+	m_state.ForAllUsers([this, &clientName, volume](const std::shared_ptr<MumbleUser>& user)
+	{
+		if (user->GetName() == ToWide(clientName))
+		{
+			GetOutput().HandleClientVolumeOverride(*user, volume);
+		}
+	});
 }
 
 void MumbleClient::GetTalkers(std::vector<std::string>* referenceIds)
@@ -375,12 +441,30 @@ void MumbleClient::HandleVoice(const uint8_t* data, size_t size)
 
 	if (pds.left() >= 12)
 	{
-		float pos[3];
+		std::array<float, 3> pos;
 		pds >> pos[0];
 		pds >> pos[1];
 		pds >> pos[2];
 
-		this->GetOutput().HandleClientPosition(*user, pos);
+		if (m_positionHook)
+		{
+			auto newPos = m_positionHook(ToNarrow(user->GetName()));
+
+			if (newPos)
+			{
+				pos = *newPos;
+			}
+		}
+
+		if (pds.left() >= 4)
+		{
+			float distance;
+			pds >> distance;
+
+			this->GetOutput().HandleClientDistance(*user, distance);
+		}
+
+		this->GetOutput().HandleClientPosition(*user, pos.data());
 	}
 
 	printf("\n");

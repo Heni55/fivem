@@ -16,6 +16,8 @@
 
 #include <tbb/concurrent_queue.h>
 
+#include <uvw.hpp>
+
 namespace net
 {
 class UvTcpServer;
@@ -25,9 +27,9 @@ class UvTcpServerStream : public TcpServerStream
 private:
 	UvTcpServer* m_server;
 
-	std::unique_ptr<uv_tcp_t> m_client;
+	std::shared_ptr<uvw::TCPHandle> m_client;
 
-	std::unique_ptr<uv_async_t> m_writeCallback;
+	std::shared_ptr<uvw::AsyncHandle> m_writeCallback;
 
 	std::shared_mutex m_writeCallbackMutex;
 
@@ -35,8 +37,10 @@ private:
 
 	std::vector<char> m_readBuffer;
 
+	volatile bool m_closingClient;
+
 private:
-	void HandleRead(ssize_t nread, const uv_buf_t* buf);
+	void HandleRead(ssize_t nread, const std::unique_ptr<char[]>& buf);
 
 	void HandlePendingWrites();
 
@@ -52,7 +56,7 @@ public:
 
 	virtual ~UvTcpServerStream();
 
-	bool Accept(std::unique_ptr<uv_tcp_t>&& client);
+	bool Accept(std::shared_ptr<uvw::TCPHandle>&& client);
 
 	virtual void AddRef() override
 	{
@@ -69,9 +73,18 @@ public:
 
 	virtual void Write(const std::vector<uint8_t>& data) override;
 
+	virtual void Write(const std::string& data) override;
+
+	virtual void Write(std::vector<uint8_t>&&) override;
+
+	virtual void Write(std::string&&) override;
+
 	virtual void Close() override;
 
 	virtual void ScheduleCallback(const TScheduledCallback& callback) override;
+
+private:
+	void WriteInternal(std::unique_ptr<char[]> data, size_t size);
 };
 
 class TcpServerManager;
@@ -81,7 +94,7 @@ class UvTcpServer : public TcpServer
 private:
 	TcpServerManager* m_manager;
 
-	std::unique_ptr<uv_tcp_t> m_server;
+	std::shared_ptr<uvw::TCPHandle> m_server;
 
 	std::set<fwRefContainer<UvTcpServerStream>> m_clients;
 
@@ -93,11 +106,11 @@ public:
 
 	virtual ~UvTcpServer();
 
-	bool Listen(std::unique_ptr<uv_tcp_t>&& server);
+	bool Listen(std::shared_ptr<uvw::TCPHandle>&& server);
 
-	inline uv_tcp_t* GetServer()
+	inline std::shared_ptr<uvw::TCPHandle> GetServer()
 	{
-		return m_server.get();
+		return m_server;
 	}
 
 	inline TcpServerManager* GetManager()

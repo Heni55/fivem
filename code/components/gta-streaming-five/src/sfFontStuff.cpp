@@ -35,6 +35,15 @@ namespace sf
 {
 	int RegisterFontIndex(const std::string& fontName)
 	{
+		// find if the same font is already registered
+		auto it = std::find(g_fontIds.begin(), g_fontIds.end(), fontName);
+
+		if (it != g_fontIds.end())
+		{
+			return it - g_fontIds.begin();
+		}
+
+		// if not, don't
 		g_fontIds.push_back(fontName);
 		return g_fontIds.size() - 1;
 	}
@@ -145,7 +154,7 @@ static GFxMovieRoot* g_movie;
 template<typename TFn>
 static void HandleEarlyLoading(TFn&& cb)
 {
-	auto idx = streaming::GetStreamingIndexForName("font_lib_cfx.gfx");
+	static uint32_t idx = 0;
 
 	if (idx == 0)
 	{
@@ -195,13 +204,13 @@ static bool FindExportedResource(void* movieRoot, void* localDef, void* bindData
 {
 	bool rv = g_origFindExportedResource(movieRoot, localDef, bindData, symbol);
 
-	if (!rv)
+	HandleEarlyLoading([&rv, movieRoot, bindData, symbol]()
 	{
-		HandleEarlyLoading([&rv, movieRoot, bindData, symbol]()
+		if (!rv)
 		{
 			rv = g_origFindExportedResource(movieRoot, g_md, bindData, symbol);
-		});
-	}
+		}
+	});
 
 	return rv;
 }
@@ -212,13 +221,13 @@ static bool GetExportedResource(void* movieDef, void* bindData, void* symbol, vo
 {
 	bool rv = g_origGetExportedResource(movieDef, bindData, symbol, ignoreDef);
 
-	if (!rv)
+	HandleEarlyLoading([&rv, bindData, symbol]()
 	{
-		HandleEarlyLoading([&rv, bindData, symbol]()
+		if (!rv)
 		{
 			rv = g_origGetExportedResource(g_md, bindData, symbol, NULL);
-		});
-	}
+		}
+	});
 
 	return rv;
 }

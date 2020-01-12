@@ -14,10 +14,12 @@
 
 #include <VFSDevice.h>
 
+#ifndef HTTP_EXPORT
 #ifdef COMPILING_HTTP_CLIENT
 #define HTTP_EXPORT DLL_EXPORT
 #else
 #define HTTP_EXPORT DLL_IMPORT
+#endif
 #endif
 
 namespace rage
@@ -53,11 +55,13 @@ struct HttpRequestOptions
 	std::function<bool(const std::string&)> streamingCallback;
 	std::chrono::milliseconds timeoutNoResponse;
 	int weight;
+	bool ipv4;
 
 	inline HttpRequestOptions()
 	{
 		timeoutNoResponse = std::chrono::milliseconds(0);
 		weight = 16;
+		ipv4 = false;
 	}
 };
 
@@ -113,6 +117,9 @@ public:
 
 	// compatibility wrapper
 	HttpRequestPtr DoFileGetRequest(const std::wstring& host, uint16_t port, const std::wstring& url, rage::fiDevice* outDevice, const std::string& outFilename, const std::function<void(bool, const char*, size_t)>& callback);
+
+public:
+	fwEvent<void*, const std::string&> OnSetupCurlHandle;
 
 private:
 	HttpClientImpl* m_impl;

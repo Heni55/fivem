@@ -1,8 +1,16 @@
 @import "variables";
 
-@include themeIsHost() using ($theme) {
-	color: gtv($theme, fgColour);
-};
+* {
+	@include themeIsHost() using ($theme) {
+		color: gtv($theme, fgColour);
+	};
+}
+
+div.theRoot {
+	@include themeIsHost() using ($theme) {
+		--my-background-image: #{gtv($theme, backgroundImage)};
+	}
+}
 
 .app-root {
 	display: flex;
@@ -59,15 +67,19 @@ $blurSize: 20px;
 
 	transform: translate3d(0, 0, 0);
 
+	will-change: transform;
+
 	background:
 		transparent center center/cover no-repeat;
 }
 
-@include themeIsHost() using ($theme) {
-	#bg {
-		background-image: gtv($theme, backgroundImage);
+* {
+	@include themeIsHost() using ($theme) {
+		#bg {
+			background-image: var(--my-background-image);
+		}
 	}
-};
+}
 
 .webapp {
 	@include themeIsHost() using ($theme) {

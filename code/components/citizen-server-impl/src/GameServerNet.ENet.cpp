@@ -8,6 +8,9 @@
 #include <NetAddress.h>
 #include <NetBuffer.h>
 
+#include <ClientRegistry.h>
+#include <ServerInstanceBase.h>
+
 #include <enet/enet.h>
 
 namespace fx
@@ -150,6 +153,8 @@ namespace fx
 		{
 			static ConsoleCommand cmd("force_enet_disconnect", [this](int peerIdx)
 			{
+				peerIdx = m_server->GetInstance()->GetComponent<fx::ClientRegistry>()->GetClientByNetID(peerIdx)->GetPeer();
+
 				auto peer = m_peerHandles.left.find(peerIdx);
 
 				if (peer != m_peerHandles.left.end())
@@ -176,8 +181,9 @@ namespace fx
 		void ProcessHost(ENetHost* host)
 		{
 			ENetEvent event;
+			int enetEntry = 0;
 
-			while (enet_host_service(host, &event, 0) > 0)
+			while ((enetEntry = enet_host_service(host, &event, 0)) != 0)
 			{
 				switch (event.type)
 				{
@@ -305,7 +311,7 @@ namespace fx
 		{
 			// create an ENet host
 			ENetAddress addr = GetENetAddress(address);
-			ENetHost* host = enet_host_create(&addr, 256, 2, 0, 0);
+			ENetHost* host = enet_host_create(&addr, 1024, 2, 0, 0);
 
 			// ensure the host exists
 			if (!host)

@@ -126,7 +126,10 @@ private:
 	std::unique_ptr<ConsoleCommand> m_setrCommand;
 
 	std::unique_ptr<ConsoleCommand> m_toggleCommand;
+	std::unique_ptr<ConsoleCommand> m_toggleCommand2;
 	std::unique_ptr<ConsoleCommand> m_vstrCommand;
+	std::unique_ptr<ConsoleCommand> m_vstrHoldCommand;
+	std::unique_ptr<ConsoleCommand> m_vstrReleaseCommand;
 
 public:
 	inline static ConsoleVariableManager* GetDefaultInstance()

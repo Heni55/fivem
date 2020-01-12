@@ -15,6 +15,7 @@
 #include <deque>
 #include <iomanip>
 #include <sstream>
+#include <string_view>
 
 namespace net
 {
@@ -83,10 +84,7 @@ public:
 
 		std::string outStr = outData.str();
 
-		std::vector<uint8_t> dataBuffer(outStr.size());
-		memcpy(&dataBuffer[0], outStr.c_str(), outStr.size());
-
-		m_clientStream->Write(dataBuffer);
+		m_clientStream->Write(std::move(outStr));
 
 		m_sentHeaders = true;
 	}
@@ -127,20 +125,48 @@ public:
 		}
 	}
 
-	virtual void WriteOut(const std::vector<uint8_t>& data) override
+	private:
+	template<typename TContainer>
+	void WriteOutInternal(TContainer data)
 	{
 		if (m_chunked)
 		{
-			// assume chunked
-			m_clientStream->Write(fmt::sprintf("%x\r\n", data.size()));
-			m_clientStream->Write(data);
-			m_clientStream->Write("\r\n");
+			// we _don't_ want to send a 0-sized chunk
+			if (data.size() > 0)
+			{
+				// assume chunked
+				m_clientStream->Write(fmt::sprintf("%x\r\n", data.size()));
+				m_clientStream->Write(std::forward<TContainer>(data));
+				m_clientStream->Write("\r\n");
+			}
 		}
 		else
 		{
-			m_clientStream->Write(data);
+			m_clientStream->Write(std::forward<TContainer>(data));
 		}
 	}
+
+	public:
+	virtual void WriteOut(const std::vector<uint8_t>& data) override
+	{
+		WriteOutInternal<decltype(data)>(data);
+	}
+
+	virtual void WriteOut(std::vector<uint8_t>&& data) override
+	{
+		WriteOutInternal<decltype(data)>(std::move(data));
+	}
+
+	virtual void WriteOut(const std::string& data) override
+	{
+		WriteOutInternal<decltype(data)>(data);
+	}
+
+	virtual void WriteOut(std::string&& data) override
+	{
+		WriteOutInternal<decltype(data)>(std::move(data));
+	}
+
 
 	virtual void End() override
 	{
@@ -313,6 +339,9 @@ void HttpServerImpl::OnConnection(fwRefContainer<TcpServerStream> stream)
 
 					reqState->blocked = true;
 
+					localConnectionData->request = request;
+					localConnectionData->response = response;
+
 					for (auto& handler : m_handlers)
 					{
 						if (handler->HandleRequest(request, response) || response->HasEnded())
@@ -334,8 +363,6 @@ void HttpServerImpl::OnConnection(fwRefContainer<TcpServerStream> stream)
 
 						if (contentLength > 0)
 						{
-							localConnectionData->request = request;
-							localConnectionData->response = response;
 							localConnectionData->contentLength = contentLength;
 
 							localConnectionData->readState = ReadStateBody;
@@ -348,8 +375,6 @@ void HttpServerImpl::OnConnection(fwRefContainer<TcpServerStream> stream)
 
 							if (request->GetHeader(transferEncodingKey, transferEncodingDefault) == transferEncodingComparison)
 							{
-								localConnectionData->request = request;
-								localConnectionData->response = response;
 								localConnectionData->contentLength = -1;
 
 								localConnectionData->lastLength = 0;
@@ -489,11 +514,14 @@ void HttpServerImpl::OnConnection(fwRefContainer<TcpServerStream> stream)
 	{
 		std::unique_lock<std::mutex> lock(reqState->pingLock);
 
-		reqState->ping = [readCallback]()
+		reqState->ping = [stream, readCallback]()
 		{
 			if (readCallback)
 			{
-				readCallback({});
+				stream->ScheduleCallback([readCallback]()
+				{
+					readCallback({});
+				});
 			}
 		};
 	}
@@ -502,7 +530,7 @@ void HttpServerImpl::OnConnection(fwRefContainer<TcpServerStream> stream)
 
 	stream->SetCloseCallback([=]()
 	{
-		if (connectionData->request.GetRef())
+		if (connectionData && connectionData->request.GetRef())
 		{
 			auto cancelHandler = connectionData->request->GetCancelHandler();
 

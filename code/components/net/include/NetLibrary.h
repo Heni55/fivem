@@ -10,6 +10,7 @@
 #include <bitset>
 #include <functional>
 #include <thread>
+#include <ppltasks.h>
 #include <WS2tcpip.h>
 #include "HttpClient.h"
 #include "CrossLibraryInterfaces.h"
@@ -187,6 +188,8 @@ private:
 
 	concurrency::concurrent_queue<std::function<void()>> m_mainFrameQueue;
 
+	std::function<void(const std::string&, const std::string&)> m_cardResponseHandler;
+
 private:
 	typedef std::function<void(const char* buf, size_t len)> ReliableHandlerType;
 
@@ -226,7 +229,7 @@ public:
 
 	virtual void RunFrame() override;
 
-	virtual void ConnectToServer(const std::string& rootUrl);
+	virtual concurrency::task<void> ConnectToServer(const std::string& rootUrl);
 
 	virtual void Disconnect(const char* reason) override;
 
@@ -237,6 +240,8 @@ public:
 	virtual void RoutePacket(const char* buffer, size_t length, uint16_t netID) override;
 
 	virtual void SendReliableCommand(const char* type, const char* buffer, size_t length) override;
+
+	void SendUnreliableCommand(const char* type, const char* buffer, size_t length);
 
 	void RunMainFrame();
 
@@ -270,6 +275,8 @@ public:
 	void Resurrection();
 
 	void CancelDeferredConnection();
+
+	void SubmitCardResponse(const std::string& dataJson, const std::string& token);
 
 	uint64_t GetGUID();
 
@@ -344,6 +351,10 @@ public:
 	fwEvent<NetAddress> OnFinalizeDisconnect;
 
 	fwEvent<const char*> OnConnectionError;
+
+	// a1: adaptive card JSON
+	// a2: connection token
+	fwEvent<const std::string&, const std::string&> OnConnectionCardPresent;
 
 	// a1: status message
 	// a2: current progress

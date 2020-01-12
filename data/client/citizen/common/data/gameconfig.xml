@@ -65,19 +65,19 @@
 						</Item>
 						<Item>
 							<PoolName>StreamPed req data</PoolName>
-							<PoolSize value="90"/>
+							<PoolSize value="180"/>
 						</Item>
 						<Item>
 							<PoolName>StreamPed render data</PoolName>
-							<PoolSize value="200"/>
+							<PoolSize value="400"/>
 						</Item>
 						<Item>
 							<PoolName>PedProp req data</PoolName>
-							<PoolSize value="100"/>
+							<PoolSize value="200"/>
 						</Item>
 						<Item>
 							<PoolName>PedProp render data</PoolName>
-							<PoolSize value="240"/>
+							<PoolSize value="480"/>
 						</Item>
 						<Item>
 							<!-- Size of CVehicleRecordingMgr's streaming module. -->
@@ -370,6 +370,10 @@
 						</Item>
 						<Item>
 							<PoolName>CWeapon</PoolName>
+							<PoolSize value="1024"/>
+						</Item>
+						<Item>
+							<PoolName>CWeaponComponentInfo</PoolName>
 							<PoolSize value="1024"/>
 						</Item>
 						<Item>
@@ -862,10 +866,10 @@
 					<MaxMloModelInfos value="220"/>
 					<MaxPedModelInfos value="825"/>
 					<MaxTimeModelInfos value="1800"/>
-					<MaxVehicleModelInfos value="620"/>
+					<MaxVehicleModelInfos value="1024"/>
 					<MaxWeaponModelInfos value="115"/>
 					<MaxExtraPedModelInfos value="1024"/>
-					<MaxExtraVehicleModelInfos value="1024"/>
+					<MaxExtraVehicleModelInfos value="2048"/>
 					<MaxExtraWeaponModelInfos value="1024"/>
 				</ConfigModelInfo>
 

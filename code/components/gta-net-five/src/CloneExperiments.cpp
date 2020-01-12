@@ -73,9 +73,9 @@ static int g_playerListCount;
 static CNetGamePlayer* g_playerListRemote[256];
 static int g_playerListCountRemote;
 
-static CNetGamePlayer*(*g_origGetPlayerByIndex)(int);
+static CNetGamePlayer*(*g_origGetPlayerByIndex)(uint8_t);
 
-static CNetGamePlayer* GetPlayerByIndex(int index)
+static CNetGamePlayer* __fastcall GetPlayerByIndex(uint8_t index)
 {
 	if (!icgi->OneSyncEnabled)
 	{
@@ -185,14 +185,23 @@ namespace sync
 {
 	void TempHackMakePhysicalPlayer(uint16_t clientId, int idx = -1)
 	{
+		auto npPool = rage::GetPoolBase("CNonPhysicalPlayerData");
+
+		// probably shutting down the network subsystem
+		if (!npPool)
+		{
+			return;
+		}
+
 		void* fakeInAddr = calloc(256, 1);
 		void* fakeFakeData = calloc(256, 1);
 
-		ScInAddr* inAddr = (ScInAddr*)fakeInAddr;
-		inAddr->ipLan = clientId ^ 0xFEED;
-		inAddr->ipUnk = clientId ^ 0xFEED;
-		inAddr->ipOnline = clientId ^ 0xFEED;
-		inAddr->rockstarAccountId = clientId;
+		rlGamerInfo* inAddr = (rlGamerInfo*)fakeInAddr;
+		inAddr->peerAddress.localAddr.ip.addr = clientId ^ 0xFEED;
+		inAddr->peerAddress.relayAddr.ip.addr = clientId ^ 0xFEED;
+		inAddr->peerAddress.publicAddr.ip.addr = clientId ^ 0xFEED;
+		inAddr->peerAddress.rockstarAccountId = clientId;
+		inAddr->gamerId = clientId;
 
 		// 1290
 		// 1365
@@ -201,7 +210,7 @@ namespace sync
 		//void* nonphys = calloc(256, 1);
 
 		// this has to come from the pool directly as the game will expect to free it
-		void* nonPhys = rage::PoolAllocate(rage::GetPoolBase("CNonPhysicalPlayerData"));
+		void* nonPhys = rage::PoolAllocate(npPool);
 		((void(*)(void*))hook::get_adjusted(0x1410A4024))(nonPhys); // ctor
 
 		// 1493
@@ -272,7 +281,7 @@ rage::netObject* GetLocalPlayerPedNetObject()
 	return nullptr;
 }
 
-void HandleCliehtDrop(const NetLibraryClientInfo& info)
+void HandleClientDrop(const NetLibraryClientInfo& info)
 {
 	if (info.netId != g_netLibrary->GetServerNetID() && info.slotId != g_netLibrary->GetServerSlotID())
 	{
@@ -376,7 +385,7 @@ void HandleCliehtDrop(const NetLibraryClientInfo& info)
 
 static CNetGamePlayer*(*g_origGetOwnerNetPlayer)(rage::netObject*);
 
-static CNetGamePlayer* netObject__GetPlayerOwner(rage::netObject* object)
+CNetGamePlayer* netObject__GetPlayerOwner(rage::netObject* object)
 {
 	if (!icgi->OneSyncEnabled)
 	{
@@ -867,7 +876,7 @@ void ObjectManager_End(rage::netObjectMgr* objectMgr)
 
 			for (int i = 0; i < 256; i++)
 			{
-				CloneObjectMgr->ForAllNetObjects(i, objectCb);
+				CloneObjectMgr->ForAllNetObjects(i, objectCb, true);
 			}
 
 			auto listCopy = TheClones->GetObjectList();
@@ -943,7 +952,7 @@ static rage::netPlayer* GetPlayerFromGamerId(rage::netPlayerMgrBase* mgr, const 
 	{
 		if (p)
 		{
-			if (p->GetPlatformPlayerData()->addr.rockstarAccountId == gamerId.accountId)
+			if (p->GetGamerInfo()->peerAddress.rockstarAccountId == gamerId.accountId)
 			{
 				return p;
 			}
@@ -1094,6 +1103,16 @@ static void UnkBubbleWrap()
 	}
 }
 
+static void(*g_origUnkEventMgr)(void*, void*);
+
+static void UnkEventMgr(void* mgr, void* ply)
+{
+	if (!icgi->OneSyncEnabled)
+	{
+		g_origUnkEventMgr(mgr, ply);
+	}
+}
+
 static HookFunction hookFunction([]()
 {
 	// 1604
@@ -1130,10 +1149,10 @@ static HookFunction hookFunction([]()
 	//hook::jump(0x140A19640, NetLogStub_DoLog);
 
 	// netobjmgr count, temp dbg
-	hook::put<uint8_t>(hook::get_pattern("48 8D 05 ? ? ? ? BE 1F 00 00 00 48 8B F9", 8), 64);
+	hook::put<uint8_t>(hook::get_pattern("48 8D 05 ? ? ? ? BE 1F 00 00 00 48 8B F9", 8), 128);
 
 	// 1604, netobjmgr alloc size, temp dbg
-	hook::put<uint32_t>(0x14101CF4F, 32712 + 4096);
+	hook::put<uint32_t>(0x14101CF4F, 32712 + 8192);
 
 	MH_Initialize();
 	MH_CreateHook(hook::get_pattern("4C 8B F1 41 BD 05", -0x22), PassObjectControlStub, (void**)&g_origPassObjectControl);
@@ -1147,6 +1166,9 @@ static HookFunction hookFunction([]()
 	MH_CreateHook(hook::get_pattern("33 F6 33 DB 33 ED 0F 28 80", -0x3A), UnkBubbleWrap, (void**)&g_origUnkBubbleWrap);
 
 	MH_CreateHook(hook::get_pattern("0F 29 70 C8 0F 28 F1 33 DB 45", -0x1C), GetPlayersNearPoint, (void**)&g_origGetPlayersNearPoint);
+
+	// func that reads neteventmgr by player idx, crashes page heap
+	MH_CreateHook(hook::get_pattern("80 7A 2D FF 48 8B EA 48 8B F1 0F", -0x13), UnkEventMgr, (void**)&g_origUnkEventMgr);
 
 	// return to disable breaking hooks
 	//return;
@@ -1370,6 +1392,14 @@ namespace rage
 
 		virtual bool Equals(const netGameEvent* event) = 0;
 
+		virtual bool NotEquals(const netGameEvent* event) = 0;
+
+		virtual bool MustPersist() = 0;
+
+		virtual bool MustPersistWhenOutOfScope() = 0;
+
+		virtual bool HasTimedOut() = 0;
+
 	public:
 		uint16_t eventId;
 
@@ -1489,17 +1519,24 @@ static void EventMgr_AddEvent(void* eventMgr, rage::netGameEvent* ev)
 	++eventHeader;
 }
 
+static atPoolBase** g_netGameEventPool;
+
 static void EventManager_Update()
 {
+	if (!*g_netGameEventPool)
+	{
+		return;
+	}
+
 	for (auto& eventPair : g_events)
 	{
 		auto [ev, time] = eventPair.second;
 
 		if (ev)
 		{
-			auto expiryDuration = (ev->requiresReply) ? 3s : 200ms;
+			auto expiryDuration = 5s;
 
-			if ((msec() - time) > expiryDuration)
+			if (ev->HasTimedOut() || (msec() - time) > expiryDuration)
 			{
 				delete ev;
 
@@ -1642,6 +1679,12 @@ static InitFunction initFunctionEv([]()
 				return;
 			}
 
+			if (g_players[info.slotId])
+			{
+				trace("Dropping duplicate player for slotID %d.\n", info.slotId);
+				HandleClientDrop(info);
+			}
+
 			HandleClientInfo(info);
 		});
 
@@ -1652,7 +1695,7 @@ static InitFunction initFunctionEv([]()
 				return;
 			}
 
-			HandleCliehtDrop(info);
+			HandleClientDrop(info);
 		});
 
 		netLibrary->AddReliableHandler("msgNetGameEvent", [](const char* data, size_t len)
@@ -1711,6 +1754,11 @@ static HookFunction hookFunctionEv([]()
 	MH_CreateHook(hook::get_pattern("85 DB 74 78 44 8B F3 48", -0x30), GetFireApplicability, (void**)&g_origGetFireApplicability);
 
 	MH_EnableHook(MH_ALL_HOOKS);
+
+	{
+		auto location = hook::get_pattern("44 8B 40 20 8B 40 10 41 C1 E0 02 41 C1 F8 02 41 2B C0 0F 85", -7);
+		g_netGameEventPool = hook::get_address<decltype(g_netGameEventPool)>(location);
+	}
 });
 
 #include <nutsnbolts.h>
@@ -1851,6 +1899,34 @@ static void ManuallyDirtyNodeStub(void* node, void* object)
 	DirtyNode(object, node);
 }
 
+static void(*g_orig_netSyncDataNode_ForceSend)(void* node, int actFlag1, int actFlag2, rage::netObject* object);
+
+static void netSyncDataNode_ForceSendStub(void* node, int actFlag1, int actFlag2, rage::netObject* object)
+{
+	if (!icgi->OneSyncEnabled)
+	{
+		g_orig_netSyncDataNode_ForceSend(node, actFlag1, actFlag2, object);
+		return;
+	}
+
+	// maybe needs to read act flags?
+	DirtyNode(object, node);
+}
+
+static void(*g_orig_netSyncDataNode_ForceSendToPlayer)(void* node, int player, int actFlag1, int actFlag2, rage::netObject* object);
+
+static void netSyncDataNode_ForceSendToPlayerStub(void* node, int player, int actFlag1, int actFlag2, rage::netObject* object)
+{
+	if (!icgi->OneSyncEnabled)
+	{
+		g_orig_netSyncDataNode_ForceSendToPlayer(node, player, actFlag1, actFlag2, object);
+		return;
+	}
+
+	// maybe needs to read act flags?
+	DirtyNode(object, node);
+}
+
 static void(*g_origCallSkip)(void* a1, void* a2, void* a3, void* a4, void* a5);
 
 static void SkipCopyIf1s(void* a1, void* a2, void* a3, void* a4, void* a5)
@@ -1883,6 +1959,10 @@ static HookFunction hookFunction2([]()
 		}
 
 		MH_CreateHook(hook::get_pattern("48 83 79 48 00 48 8B D9 74 19", -6), ManuallyDirtyNodeStub, (void**)&g_origManuallyDirtyNode);
+
+		MH_CreateHook(hook::get_pattern("85 51 28 0F 84 E4 00 00 00 33 DB", -0x24), netSyncDataNode_ForceSendStub, (void**)&g_orig_netSyncDataNode_ForceSend);
+
+		MH_CreateHook(hook::get_pattern("44 85 41 28 74 73 83 79 30 00", -0x1F), netSyncDataNode_ForceSendToPlayerStub, (void**)&g_orig_netSyncDataNode_ForceSendToPlayer);
 
 		MH_EnableHook(MH_ALL_HOOKS);
 	}
@@ -2259,6 +2339,11 @@ static InitFunction initFunction([]()
 
 		EventManager_Update();
 		TheClones->Update();
+	});
+
+	OnKillNetwork.Connect([](const char*)
+	{
+		g_events.clear();
 	});
 
 	OnKillNetworkDone.Connect([]()

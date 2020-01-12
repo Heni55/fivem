@@ -11,7 +11,6 @@
 #include "NetLibrary.h"
 #include "FontRenderer.h"
 #include "DrawCommands.h"
-#include "Screen.h"
 #include <CoreConsole.h>
 #include <mmsystem.h>
 
@@ -23,7 +22,7 @@
 const int g_netOverlayOffsetX = -30;
 const int g_netOverlayOffsetY = -60;
 const int g_netOverlayWidth = 400;
-const int g_netOverlayHeight = 300;
+const int g_netOverlayHeight = 320;
 
 const int g_netOverlaySampleSize = 200; // milliseconds per sample frame
 const int g_netOverlaySampleCount = 150;
@@ -166,9 +165,12 @@ private:
 private:
 	inline int GetOverlayLeft()
 	{
+		int x, y;
+		GetGameResolution(x, y);
+
 		if (g_netOverlayOffsetX < 0)
 		{
-			return GetScreenResolutionX() + g_netOverlayOffsetX - g_netOverlayWidth;
+			return x + g_netOverlayOffsetX - g_netOverlayWidth;
 		}
 		else
 		{
@@ -178,9 +180,12 @@ private:
 
 	inline int GetOverlayTop()
 	{
+		int x, y;
+		GetGameResolution(x, y);
+
 		if (g_netOverlayOffsetY < 0)
 		{
-			return GetScreenResolutionY() + g_netOverlayOffsetY - g_netOverlayHeight;
+			return y + g_netOverlayOffsetY - g_netOverlayHeight;
 		}
 		else
 		{
